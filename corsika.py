@@ -5,6 +5,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
+import logging
 
 # CORSIKA I/O routines
 
@@ -29,29 +30,43 @@ class CORSIKAParticle:
         return p_id + f' {p3:.2f} GeV/c {self.x:.0f} {self.y:.0f}'
     
 class CORSIKAReader:
-    def readTape(self, f, maxrec=1000000000):
-        for self.frec in range(maxrec):
-            self.nbytes = int.from_bytes(f.read(4), 'little')
-            if self.nbytes == 0: return
-            self.buf = f.read(self.nbytes)
-            i = 0
-            while i < self.nbytes:
-                try:
-                    blkhdr = self.buf[i:i+4].decode('ASCII')
-                    self.__dict__[blkhdr] = np.frombuffer(self.buf[i+4:i+1092], dtype='float32')
-                    self.blockHandler(blkhdr)
-                except UnicodeDecodeError:
-                    part = np.frombuffer(self.buf[i:i+1092], dtype='float32').reshape(-1,7)
-                    for p in part:
-                        if p[0] != 0.0: self.particleHandler(CORSIKAParticle(p))
-                i += 1092
-            end_marker = int.from_bytes(f.read(4), 'little')
-            
-    def blockHandler(self, blk):
-        pass
+    def __init__(self, f, endianness='little'):
+        self.f = f
+        self.irec = 0
+        self.isub = 0
+        self.end = endianness
+
+    def __iter__(self):
+        return self
     
-    def particleHandler(self, part):
-        pass
+    def __next__(self):
+        while True:
+            self.isub %= 21
+            if self.isub == 0:
+                nb = int.from_bytes(self.f.read(4), self.end)
+                logging.debug(f'Record start, bytes = {nb}')
+                if nb == 0: raise StopIteration
+                if nb != 22932: raise ValueError("Invalid block size")
+            
+            buf = self.f.read(1092)
+            self.isub += 1
+            if self.isub == 21: 
+                end_marker = int.from_bytes(self.f.read(4), 'little')
+                logging.debug(f'Record end, marker = {end_marker}')
+
+            match buf[0:4]:
+                case b'RUNH' | b'EVTH' | b'LONG' | b'EVTE' | b'RUNE':
+                    blk = buf[:4].decode('ASCII')
+                    logging.debug(f'sub block {self.isub} type ' + blk)
+                    self.__dict__[blk] = np.frombuffer(buf[4:], dtype=np.float32)
+                    if blk == 'EVTH': self.part = []
+                    if blk == 'EVTE': return self
+                case other:
+                    # It's a particle data block
+                    part = np.frombuffer(buf, dtype=np.float32).reshape(-1, 7)
+                    for p in part:
+                        if p[0] != 0.0: self.part.append(CORSIKAParticle(p))
+                    logging.debug(f'sub block {self.isub} is DATABLOCK particle {part[0][0]:.0f}')
     
     @property
     def runNumber(self):
@@ -66,23 +81,30 @@ def dPdh(h, p, atm):
     return -p * atm.M_m * atm.g / (atm.R * atm.temperature(h))
 
 class Atmosphere:
-    T0  = 273.16 + 15.0     # Sea level temperature
-    P0  = 101325.0          # Sea level pressure (Pa)
     M_m = 0.028966          # Molar mass of dry air (kg/mol)
     R   = 8.314             # Ideal gas constant
     g   = 9.80665           # Specific accel. of gravity
     
-    def __init__(self, h=None, **kwparms):
-        if h is None: h = np.arange(0, 50000, 100)
+    def __init__(self, h=None, SLP=101325.0, T0=273.16+15):
+        if h is None: h = np.arange(0, 100000, 1000)
         self.h = h
         self.pressure_solution = None
-        self.P0 = Atmosphere.P0
-        if 'SLP' in kwparms: self.P0 = kwparms['SLP']
-        
+        self.P0 = SLP
+        self.T0 = T0
+
+    @property
+    def h(self):
+        return self._h
+      
+    @h.setter
+    def h(self, val):
+        self._h = val
+        self.pressure_solution = None
+
     @property
     def pressure(self):
         if self.pressure_solution is None:
-            self.pressure_solution = solve_ivp(dPdh, (self.h[0], self.h[-1]), (self.P0,), t_eval=self.h, args=(self,))
+            self.pressure_solution = solve_ivp(dPdh, (0, self.h[-1]), (self.P0,), t_eval=self.h, args=(self,))
         return self.pressure_solution.y[0]
     
     @property
@@ -108,8 +130,8 @@ class ISA(Atmosphere):
     """
     def __init__(self, h=None):
         super().__init__(h)
-        h_s = np.array((0, 11000, 20000, 32000, 47000, 100000), 'd')
-        T_s = np.array((288.16, 216.66, 216.66, 228.66, 270.66, 270.66), 'd')
+        h_s = np.array((0, 11000, 20000, 32000, 47000, 51000, 71000, 85000, 200000), 'd')
+        T_s = np.array((19, -56.5, -56.5, -44.5, -2.5, -2.5, -58.5, -86.28, 1000.0), 'd') + 273.13
         self.T_int = interp1d(h_s, T_s)
         
     def temperature(self, h):
@@ -130,18 +152,18 @@ class CORSIKAAtmosphere:
         """
         Returns vector of indices to map into the 4 zones.
         """
-        return np.sum((h >= self._layers[:,np.newaxis]).astype('i'),axis=0)-1
+        return np.sum((h >= self._layers[:,np.newaxis]).astype('i'), axis=0)
      
     def __call__(self, h, *par):
         """
         Returns the thickness for given height(s), h.
         """
-        if len(par) == 0:
-            par = self._par.reshape((3,4))
-        else:
+        if len(par) > 0:
             par = np.array(par, 'd')
-            par.shape = (3,4)
-            
+            par.resize((3, 4))
+        else:
+            par = self._par
+
         idx = self.zoneIndex(h)
         return par[0,idx] + par[1,idx]*np.exp(-h/par[2,idx])
     
@@ -152,28 +174,54 @@ class CORSIKAAtmosphere:
     
     @staticmethod
     def fitToAtmosphere(atm):
+        """
+        Redefine the CORSIKA parameters for the $i$ zones as 
+        $$X_i(h) = a_i + b'_i\exp[-(h-h_{i-1})/c_i]$$
+        where $b'_i \equiv b_i\exp(h_{i-1}/c_i)$
+        In each zone, the parameter $c_i$ is defined in terms of the known starting 
+        temperature, $T_{i-1}$:
+        $$c_i = \frac{RT_{i-1}}{M_m g}$$
+        $b'_i$ can then be found from the above definition, and $a_i$ by forcing 
+        the function to fit the endpoints:
+        \begin{equation}
+        \begin{split}
+        b'_i &= X_{i-1} - a_i \\ 
+        a_i  &= \frac{X_i - X_{i-1}\exp(-\Delta h_i/c_i)}{1-\exp(- \Delta h_i/c_i)}\\
+        \end{split}
+        \end{equation}
+
+        Finally, the CORSIKA $b_i$ can then be found from $b'_i$ via the above definition.
+        """
         self = CORSIKAAtmosphere()
         self._atm = atm
         self._layers = atm.h
+    
         h = atm.h
+        h0 = 0.0
+        X0 = 0.1 * atm.P0 / atm.g
+
         a = np.zeros(4, 'd')
         b = np.zeros(4, 'd')
         c = np.zeros(4, 'd')
-        Winv = atm.R / (atm.M_m * atm.g)
-        for i in range(1, 5):
-            dh = h[i] - h[i-1]
-            dt = atm.temperature(h[i]) - atm.temperature(h[i-1])
-            a_ov_b = dt/dh * Winv
-            c[i-1] = atm.temperature(h[i-1]) * Winv / (1 + a_ov_b)
-            a[i-1] = (atm.overburden[i] - atm.overburden[i-1]*np.exp(-dh/c[i-1]))/(1 - np.exp(-dh/c[i-1]))
-            b[i-1] = (atm.overburden[i-1] - a[i-1])*np.exp(h[i-1]/c[i-1])            
+    
+        for i in range(0, 4):
+            dh   = h[i] - h0
+            dt   = atm.temperature(h[i]) - atm.temperature(h0)
+            ab   = dt/dh * atm.R / (atm.M_m * atm.g)
+            c[i] = atm.R * atm.temperature(h0) / (atm.M_m * atm.g) / (1 + ab)
+            a[i] = (atm.overburden[i] - X0*np.exp(-dh/c[i]))/(1 - np.exp(-dh/c[i]))
+            b[i] = (X0 - a[i])*np.exp(h0/c[i])
+            h0   = h[i]
+            X0   = atm.overburden[i]
+        
         self._par = np.vstack((a, b, c))
         return self
         
     def improveFit(self, atm):
-        fit_par, fit_pcov = curve_fit(self, atm.h, atm.overburden, p0 = self._par.flatten())
+        p0 = self._par.flatten()
+        fit_par, fit_pcov = curve_fit(self, atm.h, atm.overburden, p0 = p0)
         self._par = np.array(fit_par)
-        self._par.shape = (3, 4)
+        self._par.resize((3, 4))
         
     @property
     def ATMA(self):

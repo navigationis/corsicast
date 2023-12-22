@@ -57,15 +57,17 @@ if __name__ == "__main__":
             futures = []
             for i in range(args.N):
                 futures.append(exe.submit(simulate_atmosphere, RWSim(), theta))
+
+        pat = [f.result() for f in futures]
     else:
         mceq = MCEqRun(
             interaction_model='SIBYLL2.3c',
             primary_model = (crf.HillasGaisser2012, 'H3a'),
             theta_deg = 0.
         )
-        futures = [simulate_atmosphere(RWSim(), theta, mceq=mceq) for i in range(args.N)]
+        pat = [simulate_atmosphere(RWSim(), theta, mceq=mceq) for i in range(args.N)]
 
-    atm, theta, flux = list(zip(*futures))
+    atm, theta, flux = list(zip(*pat))
     atm = np.stack(atm, -1)
     flux = np.stack(flux, -1)
     np.savez(filename, e_grid=mceq.e_grid, theta=theta[0], atm=atm, flux=flux)

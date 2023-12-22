@@ -22,9 +22,9 @@ def simulate_atmosphere(r, theta, mceq=None):
             mceq.solve()
             fluxes.append(np.copy(mceq.get_solution('total_mu-') + mceq.get_solution('total_mu+')))
         fluxes = np.stack(fluxes, -1)
-        return r, theta, fluxes
+        return r.obs, theta, fluxes
     except ValueError as err:
-        return r, theta, err
+        return r.obs, theta, err
     
 
 if __name__ == "__main__":

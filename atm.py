@@ -39,7 +39,7 @@ class AtmospherefromTemperatureProfile(EarthsAtmosphere):
     alt : numpy.ndarray or list or float
         Geopotential altitudes, in meters, of temperature points.
     T : numpy.ndarray or list or float
-        Temperature, in Kelvin, at sample points.
+        Temperature, in °C, at sample points.
     P0 : float
         Reference pressure, in Pa.
     isa_fill : bool

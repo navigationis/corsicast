@@ -70,7 +70,8 @@ if __name__ == "__main__":
                         help='Run number')
     parser.add_argument('N', type=int, 
                         help='Number of patterns to generate')
-    parser.add_argument('-b', '--barometer', type=float, default=29.92)
+    parser.add_argument('-b', '--barometer', type=float, default=29.92,
+                        help='Set the sea level barometeric pressure in inches of Hg.')
     parser.add_argument('-t', '--theta', nargs='+', type=float, default=4,
                         help='List of theta angles (degrees) to simulate')
     parser.add_argument('-m', '--multiprocess', metavar='M', type=int, default=1,
@@ -78,9 +79,11 @@ if __name__ == "__main__":
     parser.add_argument('-p', '--prefix', type=str, default='ATM')
     parser.add_argument('-u', '--progress', action='store_true', default=False,
                         help='Display tqdm progress bar.')
-    parser.add_argument('--e-min', metavar='E0', type=float, default=1.0)
+    parser.add_argument('--e-min', metavar='E0', type=float, default=0.25)
     parser.add_argument('--e-max', metavar='E1', type=float, default=1E10)
+
     parser.add_argument('-H', '--alt-grid', nargs='+', type=float)
+    parser.add_argument('-d', '--debug', type=int, default=0)
 
     args = parser.parse_args()
 
@@ -88,6 +91,8 @@ if __name__ == "__main__":
     theta = np.array(args.theta, 'd')
     mceq_config.e_min = args.e_min
     mceq_config.e_max = args.e_max
+    mceq_config.debug_level = args.debug
+
     P0 = args.barometer * 3386.53075
     progress = None
 

@@ -13,6 +13,12 @@ M_m = 0.028966
 R   = 8.314
 g   = 9.80665   
 
+def scale_height(T_C):
+    """
+    Return isothermal scale height in km given a temperature
+    """
+    return 8.314 * (T_C + 273.16) / (0.029 * 9.8) * 0.001
+
 def dPdh(h, p, temperature):
     """
     Change of pressure with respect to height. Units are MKS.
